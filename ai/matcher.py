@@ -1,10 +1,16 @@
 import anthropic
 import json
 import os
+from dotenv import load_dotenv
 from ai.prompts import TENDER_PARSE_PROMPT
 from scraper.filter import detect_category
 
-client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+load_dotenv()
+
+
+def _get_client():
+    """Create Anthropic client lazily so load_dotenv() always runs first."""
+    return anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 
 async def parse_tender_with_ai(tender_raw: dict) -> dict:
@@ -21,6 +27,7 @@ async def parse_tender_with_ai(tender_raw: dict) -> dict:
     )
 
     try:
+        client = _get_client()
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=500,

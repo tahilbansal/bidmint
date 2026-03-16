@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: bidmint-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt && playwright install chromium
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: AISENSY_API_KEY
+        sync: false
+
+  - type: worker
+    name: bidmint-scheduler
+    runtime: python
+    buildCommand: pip install -r requirements.txt && playwright install chromium
+    startCommand: python scheduler.py
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: AISENSY_API_KEY
+        sync: false

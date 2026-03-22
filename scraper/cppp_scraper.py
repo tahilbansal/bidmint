@@ -1,92 +1,119 @@
 """
-CPPP Portal Scraper — eprocure.gov.in
-Scrapes Central Public Procurement Portal for food procurement tenders.
+CPPP Portal Scraper — eprocure.gov.in/cppp
+Scrapes the Central Public Procurement Portal (new Drupal-based frontend) which
+does NOT require CAPTCHA for public listings, unlike the legacy /eprocure/ path.
+
+URL structure:
+  Page 1 : https://eprocure.gov.in/cppp/latestactivetendersnew/cppp10
+  Page N : https://eprocure.gov.in/cppp/latestactivetendersnew/cpppdata?page=N
+
+Table columns: Sl.No | e-Published Date | Closing Date | Opening Date |
+               Title/Ref.No./Tender Id | Organisation Name | Corrigendum
 """
 import asyncio
+from pathlib import Path
 from datetime import datetime
 import httpx
 from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 
-CPPP_SEARCH_URL = "https://eprocure.gov.in/eprocure/app"
-CPPP_ACTIVE_TENDERS_URL = "https://eprocure.gov.in/eprocure/app?page=FrontEndLatestActiveTenders&service=page"
+_PAGE1_URL = "https://eprocure.gov.in/cppp/latestactivetendersnew/cppp10"
+_PAGE_N_URL = "https://eprocure.gov.in/cppp/latestactivetendersnew/cpppdata?page={n}"
+_MAX_PAGES = 5   # 50 tenders per run — filter narrows to food/Punjab
+_DEBUG_FILE = Path(__file__).parent / "cppp_debug.html"
+
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+}
+
+
+def _save_debug_snapshot(html: str) -> None:
+    _DEBUG_FILE.write_text(html, encoding="utf-8")
+    print(f"Debug snapshot saved: {_DEBUG_FILE.resolve()}")
+
+
+def _parse_rows(soup: BeautifulSoup) -> list:
+    """Parse tender rows from a fetched CPPP page."""
+    tenders = []
+    table = soup.find("table")
+    if not table:
+        return tenders
+    for row in table.find_all("tr")[1:]:   # skip header
+        cols = row.find_all("td")
+        if len(cols) < 6:
+            continue
+        try:
+            # col[4]: anchor text = clean title; full text = title/ref/id
+            title_td = cols[4]
+            anchor = title_td.find("a")
+            title = anchor.get_text(strip=True) if anchor else title_td.get_text(strip=True)
+            full_ref = title_td.get_text(strip=True)
+            tender_id = full_ref.rsplit("/", 1)[-1].strip() or full_ref.replace("/", "-")
+
+            department = cols[5].get_text(strip=True)
+            deadline_str = cols[2].get_text(strip=True)   # Bid Submission Closing Date
+            deadline = _parse_date(deadline_str)
+
+            if title:
+                tenders.append({
+                    "id": f"cppp-{tender_id}",
+                    "title": title,
+                    "department": department,
+                    "location": "",   # not in listing; org name used for filtering
+                    "quantity": "",
+                    "deadline": deadline,
+                    "source": "cppp",
+                })
+        except Exception as e:
+            print(f"Error parsing CPPP row: {e}")
+    return tenders
 
 
 @retry(
     stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=60, min=60, max=300),
+    wait=wait_exponential(multiplier=30, min=30, max=120),
     reraise=True
 )
 async def scrape_cppp_tenders() -> list:
     """
-    Scrape CPPP portal for active food-related tenders.
+    Scrape CPPP portal (new frontend) for active tenders.
+    Fetches up to _MAX_PAGES pages (10 tenders each).
     Returns list of raw tender dicts.
     """
     tenders = []
 
     async with httpx.AsyncClient(
-        timeout=30,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            )
-        },
-        follow_redirects=True
+        timeout=30, headers=_HEADERS, follow_redirects=True
     ) as client:
-        try:
-            resp = await client.get(CPPP_ACTIVE_TENDERS_URL)
-            resp.raise_for_status()
+        for page_num in range(1, _MAX_PAGES + 1):
+            url = _PAGE1_URL if page_num == 1 else _PAGE_N_URL.format(n=page_num)
+            try:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                soup = BeautifulSoup(resp.text, "html.parser")
 
-            soup = BeautifulSoup(resp.text, "html.parser")
+                # Sanity check: if somehow a CAPTCHA page slips through, bail
+                if not soup.find("table"):
+                    _save_debug_snapshot(resp.text)
+                    print(f"CPPP: No table on page {page_num} — saved debug HTML.")
+                    break
 
-            # CPPP uses a table layout for active tenders
-            table = soup.find("table", {"id": "table"})
-            if not table:
-                # Fallback: parse whatever table exists
-                table = soup.find("table")
+                rows = _parse_rows(soup)
+                if not rows:
+                    break   # no more data
+                tenders.extend(rows)
 
-            if not table:
-                print("CPPP: No tender table found on page")
-                return tenders
-
-            rows = table.find_all("tr")[1:]  # Skip header row
-
-            for row in rows:
-                try:
-                    cols = row.find_all("td")
-                    if len(cols) < 5:
-                        continue
-
-                    tender_id = cols[0].get_text(strip=True)
-                    title = cols[1].get_text(strip=True)
-                    department = cols[2].get_text(strip=True) if len(cols) > 2 else ""
-                    location = cols[3].get_text(strip=True) if len(cols) > 3 else ""
-                    deadline_str = cols[4].get_text(strip=True) if len(cols) > 4 else ""
-                    deadline = _parse_date(deadline_str)
-
-                    if tender_id and title:
-                        tenders.append({
-                            "id": f"cppp-{tender_id.strip()}",
-                            "title": title.strip(),
-                            "department": department.strip(),
-                            "location": location.strip(),
-                            "quantity": "",  # CPPP doesn't always show quantity in listing
-                            "deadline": deadline,
-                            "source": "cppp",
-                        })
-                except Exception as e:
-                    print(f"Error parsing CPPP row: {e}")
-                    continue
-
-        except httpx.HTTPStatusError as e:
-            print(f"CPPP HTTP error: {e.response.status_code}")
-            raise
-        except Exception as e:
-            print(f"CPPP scraper error: {e}")
-            raise
+            except httpx.HTTPStatusError as e:
+                print(f"CPPP HTTP error on page {page_num}: {e.response.status_code}")
+                break
+            except Exception as e:
+                print(f"CPPP scraper error on page {page_num}: {e}")
+                break
 
     print(f"CPPP scraper: found {len(tenders)} tenders")
     return tenders

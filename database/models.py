@@ -14,7 +14,7 @@ class Supplier(Base):
     __tablename__ = "suppliers"
 
     id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    whatsapp   = Column(String(15), unique=True, nullable=False)  # 919XXXXXXXXX
+    whatsapp   = Column(String(15), unique=True, nullable=False) 
     name       = Column(String(100), nullable=True)
     district   = Column(String(50), nullable=False)
     categories = Column(Text, nullable=False)  # "rice,wheat,pulses"

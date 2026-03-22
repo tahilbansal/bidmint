@@ -7,9 +7,11 @@ Usage:
   python scripts/test_pipeline.py --step db           # Test DB connection + read suppliers
   python scripts/test_pipeline.py --step ai           # Test AI matching on sample tender
   python scripts/test_pipeline.py --step scraper      # Test GeM scraper (live, 30-60s)
+  python scripts/test_pipeline.py --step cppp         # Test CPPP portal scraper (live)
+  python scripts/test_pipeline.py --step punjab       # Test Punjab state portal scraper (live)
   python scripts/test_pipeline.py --step prices       # Test AGMARKNET price fetch
   python scripts/test_pipeline.py --step whatsapp     # Test AiSensy WhatsApp send
-  python scripts/test_pipeline.py --step full         # Run full pipeline (no WhatsApp)
+  python scripts/test_pipeline.py --step full         # Run full pipeline — all 3 portals (no WhatsApp)
 """
 
 import sys
@@ -231,6 +233,71 @@ async def test_scraper():
         print(f"\n  ❌ Scraper error: {e}")
 
 
+# ─── STEP 5b: CPPP Scraper ──────────────────────────────────────────────────
+
+async def test_cppp():
+    print("\n" + "="*60)
+    print("STEP 5b — CPPP Portal Scraper Test (live)")
+    print("="*60)
+    print("Fetching from eprocure.gov.in... (HTTP, faster than GeM)")
+
+    from scraper.cppp_scraper import scrape_cppp_tenders
+    from scraper.filter import filter_tenders
+
+    try:
+        tenders = await scrape_cppp_tenders()
+        print(f"\n  Raw tenders scraped: {len(tenders)}")
+
+        if tenders:
+            print(f"\n  Sample (first 5):")
+            for t in tenders[:5]:
+                print(f"    [{t['id']}] {t['title'][:70]}")
+                print(f"            Dept: {t['department'][:60]}")
+
+        filtered = filter_tenders(tenders)
+        print(f"\n  Punjab food tenders: {len(filtered)}")
+        for t in filtered[:5]:
+            print(f"    ✅ [{t['id']}] {t['title'][:60]} | {t['category']}")
+
+        print(f"\n✅ CPPP scraper test passed!" if tenders else "\n⚠️  No tenders scraped — CPPP portal may be slow or layout changed")
+
+    except Exception as e:
+        print(f"\n  ❌ CPPP scraper error: {e}")
+
+
+# ─── STEP 5c: Punjab State Scraper ───────────────────────────────────────────
+
+async def test_punjab():
+    print("\n" + "="*60)
+    print("STEP 5c — Punjab State Portal Scraper Test (live)")
+    print("="*60)
+    print("Fetching from eproc.punjab.gov.in via HTTP (no browser needed)...")
+
+    from scraper.punjab_scraper import scrape_punjab_tenders
+    from scraper.filter import filter_tenders
+
+    try:
+        tenders = await scrape_punjab_tenders()
+        print(f"\n  Raw tenders scraped: {len(tenders)}")
+
+        if tenders:
+            print(f"\n  Sample (first 5):")
+            for t in tenders[:5]:
+                print(f"    [{t['id']}] {t['title'][:70]}")
+                print(f"            Dept: {t['department'][:60]}")
+
+        # Punjab portal tenders are already Punjab — filter only for food
+        filtered = filter_tenders(tenders)
+        print(f"\n  Food tenders from Punjab portal: {len(filtered)}")
+        for t in filtered[:5]:
+            print(f"    ✅ [{t['id']}] {t['title'][:60]} | {t['category']}")
+
+        print(f"\n✅ Punjab scraper test passed!" if tenders else "\n⚠️  No tenders — portal may be slow or layout changed")
+
+    except Exception as e:
+        print(f"\n  ❌ Punjab scraper error: {e}")
+
+
 # ─── STEP 6: Mandi Prices ────────────────────────────────────────────────────
 
 async def test_prices():
@@ -265,10 +332,9 @@ async def test_whatsapp():
     print("STEP 7 — WhatsApp API Test (AiSensy)")
     print("="*60)
 
+    import httpx
     from dotenv import load_dotenv
     load_dotenv()
-
-    from whatsapp.sender import send_help_menu, _send_session_message
 
     admin = os.getenv("ADMIN_WHATSAPP")
     api_key = os.getenv("AISENSY_API_KEY")
@@ -280,25 +346,63 @@ async def test_whatsapp():
         print("\n  ❌ ADMIN_WHATSAPP not set in .env")
         return
 
-    print(f"\n  Sending HELP menu to {admin}...")
-    success = await send_help_menu(admin)
+    print(f"\n  Target number : {admin}")
+    print(f"  API key prefix: {api_key[:20]}...")
 
-    if success:
-        print(f"  ✅ Message sent! Check WhatsApp on {admin}")
-    else:
-        print("  ❌ Message failed — check AISENSY_API_KEY and campaign setup")
-        print("  Tip: Make sure 'session_reply' campaign exists in AiSensy dashboard")
-        print("       OR the number has messaged your business WhatsApp in last 24h")
+    # ── Test 1: raw session_reply message (works if number messaged you first) ──
+    payload_session = {
+        "apiKey": api_key,
+        "campaignName": "session_reply",
+        "destination": admin,
+        "userName": "BidMint",
+        "source": "test",
+        "templateParams": ["BidMint test message — API is working ✅"],
+    }
+
+    # ── Test 2: tender_alert_v1 template (works if template is approved) ──
+    payload_template = {
+        "apiKey": api_key,
+        "campaignName": os.getenv("AISENSY_CAMPAIGN_TENDER", "tender_alert_v1"),
+        "destination": admin,
+        "userName": "BidMint",
+        "templateParams": ["Punjab", "Rice Supply Test", "Food Dept", "100 MT", "30 Mar 2026"],
+    }
+
+    url = "https://backend.aisensy.com/campaign/t1/api/v2"
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        for label, payload in [("session_reply (free-form)", payload_session),
+                                ("tender_alert_v1 (template)", payload_template)]:
+            print(f"\n  ── Trying: {label} ──")
+            try:
+                resp = await client.post(url, json=payload)
+                print(f"  HTTP status : {resp.status_code}")
+                print(f"  Response    : {resp.text[:300]}")
+                if resp.status_code == 200:
+                    print(f"  ✅ SUCCESS — message queued by AiSensy")
+                    break
+                elif "No Plan active" in resp.text:
+                    print("  ⚠️  AiSensy account has no active WhatsApp Business number connected.")
+                    print("      Dashboard → Settings → Assistants → Add Assistant → connect your WA number.")
+                elif "not found" in resp.text.lower() or "invalid campaign" in resp.text.lower():
+                    print("  ⚠️  Campaign not found in AiSensy dashboard — create it first.")
+                elif "invalid" in resp.text.lower() or "unauthorized" in resp.text.lower():
+                    print("  ❌ API key rejected — check AISENSY_API_KEY in .env")
+                    break
+            except Exception as e:
+                print(f"  ❌ Request failed: {e}")
 
 
 # ─── STEP 8: Full pipeline (no WhatsApp) ─────────────────────────────────────
 
 async def test_full():
     print("\n" + "="*60)
-    print("FULL PIPELINE TEST — No WhatsApp")
+    print("FULL PIPELINE TEST — All 3 portals, No WhatsApp")
     print("="*60)
 
     from scraper.gem_scraper import scrape_gem_tenders
+    from scraper.cppp_scraper import scrape_cppp_tenders
+    from scraper.punjab_scraper import scrape_punjab_tenders
     from scraper.filter import filter_tenders
     from ai.matcher import parse_tender_with_ai
     from ai.scorer import calculate_match_score
@@ -309,11 +413,36 @@ async def test_full():
     stats = {"scraped": 0, "new": 0, "matched": 0, "errors": 0}
 
     try:
-        print("\n[1/4] Scraping GeM tenders...")
-        raw = await scrape_gem_tenders()
+        print("\n[1/4] Scraping all portals...")
+        raw = []
+
+        try:
+            gem = await scrape_gem_tenders()
+            print(f"      GeM:      {len(gem)} tenders")
+            raw.extend(gem)
+        except Exception as e:
+            print(f"      GeM FAILED: {e}")
+            stats["errors"] += 1
+
+        try:
+            cppp = await scrape_cppp_tenders()
+            print(f"      CPPP:     {len(cppp)} tenders")
+            raw.extend(cppp)
+        except Exception as e:
+            print(f"      CPPP FAILED: {e}")
+            stats["errors"] += 1
+
+        try:
+            punjab = await scrape_punjab_tenders()
+            print(f"      Punjab:   {len(punjab)} tenders")
+            raw.extend(punjab)
+        except Exception as e:
+            print(f"      Punjab FAILED: {e}")
+            stats["errors"] += 1
+
         food = filter_tenders(raw)
         stats["scraped"] = len(food)
-        print(f"      → {len(raw)} raw, {len(food)} Punjab food tenders")
+        print(f"      Total: {len(raw)} raw → {len(food)} Punjab food tenders")
 
         suppliers = db.query(Supplier).filter(Supplier.active == True).all()  # noqa: E712
         print(f"\n[2/4] Active suppliers: {len(suppliers)}")
@@ -373,7 +502,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BidMint pipeline test")
     parser.add_argument(
         "--step",
-        choices=["filter", "ai", "scorer", "db", "scraper", "prices", "whatsapp", "full"],
+        choices=["filter", "ai", "scorer", "db", "scraper", "cppp", "punjab", "prices", "whatsapp", "full"],
         required=True,
         help="Which step to test"
     )
@@ -390,6 +519,10 @@ if __name__ == "__main__":
             test_db()
         case "scraper":
             asyncio.run(test_scraper())
+        case "cppp":
+            asyncio.run(test_cppp())
+        case "punjab":
+            asyncio.run(test_punjab())
         case "prices":
             asyncio.run(test_prices())
         case "whatsapp":

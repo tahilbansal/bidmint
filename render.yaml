@@ -2,7 +2,7 @@ services:
   - type: web
     name: bidmint-api
     runtime: python
-    buildCommand: pip install -r requirements.txt && playwright install chromium
+    buildCommand: pip install -r requirements.txt && playwright install chromium --with-deps
     startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
@@ -12,11 +12,21 @@ services:
         sync: false
       - key: AISENSY_API_KEY
         sync: false
+      - key: AISENSY_CAMPAIGN_TENDER
+        value: tender_alert_v1
+      - key: AISENSY_CAMPAIGN_PRICE
+        value: price_digest_v1
+      - key: ADMIN_WHATSAPP
+        sync: false
+      - key: MIN_MATCH_SCORE
+        value: "70"
+      - key: ENVIRONMENT
+        value: production
 
   - type: worker
     name: bidmint-scheduler
     runtime: python
-    buildCommand: pip install -r requirements.txt && playwright install chromium
+    buildCommand: pip install -r requirements.txt && playwright install chromium --with-deps
     startCommand: python scheduler.py
     envVars:
       - key: DATABASE_URL
@@ -25,3 +35,13 @@ services:
         sync: false
       - key: AISENSY_API_KEY
         sync: false
+      - key: AISENSY_CAMPAIGN_TENDER
+        value: tender_alert_v1
+      - key: AISENSY_CAMPAIGN_PRICE
+        value: price_digest_v1
+      - key: ADMIN_WHATSAPP
+        sync: false
+      - key: MIN_MATCH_SCORE
+        value: "70"
+      - key: ENVIRONMENT
+        value: production

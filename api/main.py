@@ -1,16 +1,18 @@
-from fastapi import FastAPI, Request, Depends
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from database.connection import get_db
 from whatsapp.handler import handle_inbound
-from sqlalchemy.orm import Session
+from admin import admin_router
 import asyncio
 import os
 
 app = FastAPI(
     title="BidMint API",
     version="1.0.0",
-    docs_url="/docs" if os.getenv("ENVIRONMENT") != "production" else None
+    docs_url="/docs" if os.getenv("ENVIRONMENT") != "production" else None,
 )
+
+# Admin API — all routes under /admin/*, protected by X-Admin-Key header
+app.include_router(admin_router)
 
 
 @app.get("/health")
@@ -41,25 +43,3 @@ async def whatsapp_webhook(request: Request):
     except Exception as e:
         print(f"Webhook error: {e}")
         return JSONResponse({"status": "error"})  # Still 200
-
-
-@app.get("/admin/stats")
-async def admin_stats(db: Session = Depends(get_db)):
-    """Quick stats for admin — protected by checking source IP in production."""
-    from database.models import Supplier, Tender, Alert
-    from datetime import datetime, timedelta
-
-    return {
-        "active_suppliers": db.query(Supplier).filter(Supplier.active == True).count(),  # noqa: E712
-        "total_tenders": db.query(Tender).count(),
-        "tenders_today": db.query(Tender).filter(
-            Tender.scraped_at >= datetime.utcnow() - timedelta(days=1)
-        ).count(),
-        "alerts_today": db.query(Alert).filter(
-            Alert.sent_at >= datetime.utcnow() - timedelta(days=1)
-        ).count(),
-        "yes_replies_today": db.query(Alert).filter(
-            Alert.response == "YES",
-            Alert.responded_at >= datetime.utcnow() - timedelta(days=1)
-        ).count(),
-    }

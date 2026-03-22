@@ -1,8 +1,12 @@
 import httpx
 import os
+from dotenv import load_dotenv
 from database.models import Tender
 
-AISENSY_URL = "https://backend.aisensy.com/campaign/t1/api/v2"
+load_dotenv()
+
+AISENSY_CAMPAIGN_URL = "https://backend.aisensy.com/campaign/t1/api/v2"   # Template campaigns
+AISENSY_DIRECT_URL   = "https://backend.aisensy.com/campaign/t1/api/v2"   # Session messages (same endpoint, different payload)
 AISENSY_API_KEY = os.getenv("AISENSY_API_KEY")
 
 
@@ -21,7 +25,7 @@ async def send_tender_alert(whatsapp: str, tender: Tender) -> bool:
             str(tender.deadline.strftime("%d %b %Y") if tender.deadline else ""),
         ]
     }
-    return await _post(payload)
+    return await _post(AISENSY_CAMPAIGN_URL, payload)
 
 
 async def send_tender_details(whatsapp: str, tender: Tender) -> bool:
@@ -107,23 +111,28 @@ async def send_admin_report(whatsapp: str, stats: dict) -> bool:
 
 
 async def _send_session_message(whatsapp: str, message: str) -> bool:
-    """Send a free-form session message through AiSensy."""
+    """
+    Send a free-form (session) message via AiSensy.
+    Requires the recipient to have messaged your business number in the last 24h.
+    Uses the 'session_reply' campaignName — create this in AiSensy as an API campaign
+    with a single-variable template body {{1}} so the message text is passed as templateParams[0].
+    """
     payload = {
         "apiKey": AISENSY_API_KEY,
         "campaignName": "session_reply",
         "destination": whatsapp,
         "userName": "BidMint",
         "source": "bidmint-backend",
-        "message": message,
+        "templateParams": [message],
     }
-    return await _post(payload)
+    return await _post(AISENSY_CAMPAIGN_URL, payload)
 
 
-async def _post(payload: dict) -> bool:
+async def _post(url: str, payload: dict) -> bool:
     """Post payload to AiSensy API. Returns True on success."""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(AISENSY_URL, json=payload)
+            resp = await client.post(url, json=payload)
             success = resp.status_code == 200
             if not success:
                 print(f"AiSensy error {resp.status_code}: {resp.text[:200]}")

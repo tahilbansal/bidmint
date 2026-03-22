@@ -12,7 +12,7 @@ from database.models import Supplier
 
 PILOT_SUPPLIERS = [
     {
-        "whatsapp": "919XXXXXXXXX",  # Replace with actual number
+        "whatsapp": "919781352613",  # Replace with actual number
         "name": "Pilot Supplier",
         "district": "patiala",
         "categories": "rice,wheat,pulses",

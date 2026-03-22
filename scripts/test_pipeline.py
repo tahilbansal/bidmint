@@ -1,15 +1,15 @@
 """
 Manual pipeline test script — run each layer independently.
-WhatsApp sending is fully skipped (no AiSensy key needed).
 
 Usage:
-  python scripts/test_pipeline.py --step scraper      # Test GeM scraper only
   python scripts/test_pipeline.py --step filter       # Test keyword filter on sample data
-  python scripts/test_pipeline.py --step ai           # Test AI matching on sample tender
   python scripts/test_pipeline.py --step scorer       # Test match scoring
   python scripts/test_pipeline.py --step db           # Test DB connection + read suppliers
-  python scripts/test_pipeline.py --step full         # Run full pipeline (no WhatsApp)
+  python scripts/test_pipeline.py --step ai           # Test AI matching on sample tender
+  python scripts/test_pipeline.py --step scraper      # Test GeM scraper (live, 30-60s)
   python scripts/test_pipeline.py --step prices       # Test AGMARKNET price fetch
+  python scripts/test_pipeline.py --step whatsapp     # Test AiSensy WhatsApp send
+  python scripts/test_pipeline.py --step full         # Run full pipeline (no WhatsApp)
 """
 
 import sys
@@ -258,7 +258,40 @@ async def test_prices():
         print(f"\n  ❌ Price fetch error: {e}")
 
 
-# ─── STEP 7: Full pipeline (no WhatsApp) ─────────────────────────────────────
+# ─── STEP 7: WhatsApp API ───────────────────────────────────────────────────
+
+async def test_whatsapp():
+    print("\n" + "="*60)
+    print("STEP 7 — WhatsApp API Test (AiSensy)")
+    print("="*60)
+
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    from whatsapp.sender import send_help_menu, _send_session_message
+
+    admin = os.getenv("ADMIN_WHATSAPP")
+    api_key = os.getenv("AISENSY_API_KEY")
+
+    if not api_key:
+        print("\n  ❌ AISENSY_API_KEY not set in .env")
+        return
+    if not admin:
+        print("\n  ❌ ADMIN_WHATSAPP not set in .env")
+        return
+
+    print(f"\n  Sending HELP menu to {admin}...")
+    success = await send_help_menu(admin)
+
+    if success:
+        print(f"  ✅ Message sent! Check WhatsApp on {admin}")
+    else:
+        print("  ❌ Message failed — check AISENSY_API_KEY and campaign setup")
+        print("  Tip: Make sure 'session_reply' campaign exists in AiSensy dashboard")
+        print("       OR the number has messaged your business WhatsApp in last 24h")
+
+
+# ─── STEP 8: Full pipeline (no WhatsApp) ─────────────────────────────────────
 
 async def test_full():
     print("\n" + "="*60)
@@ -340,7 +373,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BidMint pipeline test")
     parser.add_argument(
         "--step",
-        choices=["filter", "ai", "scorer", "db", "scraper", "prices", "full"],
+        choices=["filter", "ai", "scorer", "db", "scraper", "prices", "whatsapp", "full"],
         required=True,
         help="Which step to test"
     )
@@ -359,5 +392,7 @@ if __name__ == "__main__":
             asyncio.run(test_scraper())
         case "prices":
             asyncio.run(test_prices())
+        case "whatsapp":
+            asyncio.run(test_whatsapp())
         case "full":
             asyncio.run(test_full())

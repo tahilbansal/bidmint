@@ -1,9 +1,9 @@
-services:
+﻿services:
   - type: web
     name: bidmint-api
-    runtime: python
-    buildCommand: pip install -r requirements.txt && playwright install chromium --with-deps
-    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
@@ -25,9 +25,9 @@ services:
 
   - type: worker
     name: bidmint-scheduler
-    runtime: python
-    buildCommand: pip install -r requirements.txt && playwright install chromium --with-deps
-    startCommand: python scheduler.py
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python scheduler.py
     envVars:
       - key: DATABASE_URL
         sync: false

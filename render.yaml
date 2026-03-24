@@ -14,6 +14,8 @@
         sync: false
       - key: AISENSY_CAMPAIGN_TENDER
         value: tender_alert_v1
+      - key: AISENSY_CAMPAIGN_SESSION
+        value: session_reply
       - key: AISENSY_CAMPAIGN_PRICE
         value: price_digest_v1
       - key: ADMIN_WHATSAPP
@@ -39,6 +41,8 @@
         sync: false
       - key: AISENSY_CAMPAIGN_TENDER
         value: tender_alert_v1
+      - key: AISENSY_CAMPAIGN_SESSION
+        value: session_reply
       - key: AISENSY_CAMPAIGN_PRICE
         value: price_digest_v1
       - key: ADMIN_WHATSAPP

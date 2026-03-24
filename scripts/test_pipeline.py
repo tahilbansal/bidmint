@@ -11,7 +11,7 @@ Usage:
   python scripts/test_pipeline.py --step punjab       # Test Punjab state portal scraper (live)
   python scripts/test_pipeline.py --step prices       # Test AGMARKNET price fetch
   python scripts/test_pipeline.py --step whatsapp     # Test AiSensy WhatsApp send
-  python scripts/test_pipeline.py --step full         # Run full pipeline — all 3 portals (no WhatsApp)
+  python scripts/test_pipeline.py --step full         # Run full pipeline — all 3 portals + WhatsApp alerts
 """
 
 import sys
@@ -365,6 +365,15 @@ async def test_whatsapp():
         "templateParams": ["BidMint test message — API is working ✅"],
     }
 
+    payload_session = {
+        "apiKey": api_key,
+        "campaignName": "session_reply",
+        "destination": admin,
+        "userName": "BidMint",
+        "source": "test",
+        "templateParams": ["BidMint test message — API is working ✅"],
+    }
+
     # ── Test 2: tender_alert_v1 template (works if template is approved) ──
     payload_template = {
         "apiKey": api_key,
@@ -399,11 +408,11 @@ async def test_whatsapp():
                 print(f"  ❌ Request failed: {e}")
 
 
-# ─── STEP 8: Full pipeline (no WhatsApp) ─────────────────────────────────────
+# ─── STEP 8: Full pipeline + WhatsApp ────────────────────────────────────────
 
 async def test_full():
     print("\n" + "="*60)
-    print("FULL PIPELINE TEST — All 3 portals, No WhatsApp")
+    print("FULL PIPELINE TEST — All 3 portals + WhatsApp alerts")
     print("="*60)
 
     from scraper.gem_scraper import scrape_gem_tenders
@@ -412,11 +421,13 @@ async def test_full():
     from scraper.filter import filter_tenders
     from ai.matcher import parse_tender_with_ai
     from ai.scorer import calculate_match_score
+    from whatsapp.sender import send_tender_alert, send_tender_details
     from database.connection import SessionLocal
-    from database.models import Tender, Supplier
+    from database.models import Alert, Supplier, Tender
 
     db = SessionLocal()
-    stats = {"scraped": 0, "new": 0, "matched": 0, "errors": 0}
+    stats = {"scraped": 0, "new": 0, "matched": 0, "alerts_sent": 0, "errors": 0}
+    min_score = int(os.getenv("MIN_MATCH_SCORE", 70))
 
     try:
         print("\n[1/4] Scraping all portals...")
@@ -456,35 +467,74 @@ async def test_full():
         print(f"\n[3/4] Processing tenders with AI (max 5 for test)...")
         for t_raw in food[:5]:
             existing = db.query(Tender).filter(Tender.id == t_raw["id"]).first()
-            if existing:
-                print(f"      SKIP (already in DB): {t_raw['id']}")
-                continue
+            is_new = existing is None
 
             try:
                 ai_result = await parse_tender_with_ai(t_raw)
-                confidence = ai_result.get("confidence")
                 category = ai_result.get("food_category")
-                print(f"\n      [{t_raw['id']}]")
+                confidence = ai_result.get("confidence")
+
+                tag = "NEW" if is_new else "already in DB"
+                print(f"\n      [{t_raw['id']}] ({tag})")
                 print(f"        Title:    {t_raw['title'][:60]}")
                 print(f"        AI:       {category} | {confidence} confidence")
                 print(f"        Hindi:    {ai_result.get('item_name_hindi', '')}")
                 print(f"        Flags:    {ai_result.get('red_flags', [])}")
 
-                stats["new"] += 1
-
-                print(f"\n[4/4] Match scoring against {len(suppliers)} suppliers:")
-                for supplier in suppliers:
+                # Save new tenders to DB
+                if is_new:
+                    if category == "other" and confidence == "LOW":
+                        print(f"        AI: not food — skipping")
+                        continue
                     tender_obj = Tender(
                         id=t_raw["id"],
-                        location=t_raw.get("location", ""),
+                        source=t_raw.get("source", "gem"),
+                        title=t_raw["title"],
+                        title_hindi=ai_result.get("item_name_hindi", ""),
+                        department=t_raw["department"],
+                        location=t_raw["location"],
                         category=category,
+                        quantity=t_raw["quantity"],
+                        quantity_kg=ai_result.get("quantity_kg"),
+                        deadline=t_raw.get("deadline"),
+                        whatsapp_summary=ai_result["whatsapp_summary"],
+                        ai_confidence=confidence,
+                        red_flags=str(ai_result.get("red_flags", [])),
                     )
+                    db.add(tender_obj)
+                    db.commit()
+                    db.refresh(tender_obj)
+                    stats["new"] += 1
+                else:
+                    tender_obj = existing
+
+                print(f"\n[4/4] Matching + alerting {len(suppliers)} supplier(s):")
+                for supplier in suppliers:
                     score = calculate_match_score(supplier, tender_obj, ai_result)
-                    min_score = int(os.getenv("MIN_MATCH_SCORE", 70))
-                    icon = "✅ WOULD ALERT" if score >= min_score else "❌ below threshold"
+                    icon = "🟢 SENDING" if score >= min_score else "🔴 below threshold"
                     print(f"        {supplier.whatsapp} | score={score} | {icon}")
+
                     if score >= min_score:
                         stats["matched"] += 1
+                        sent = await send_tender_alert(supplier.whatsapp, tender_obj)
+                        if sent:
+                            stats["alerts_sent"] += 1
+                            print(f"          ✅ WhatsApp alert sent")
+                            # Send full recommendation as follow-up (requires session_reply campaign in AiSensy)
+                            print(f"          📋 Sending full recommendation...")
+                            await send_tender_details(supplier.whatsapp, tender_obj)
+                            # Only persist Alert record for genuinely new tenders
+                            if is_new:
+                                db.add(Alert(
+                                    supplier_id=supplier.id,
+                                    tender_id=tender_obj.id,
+                                    match_score=score,
+                                ))
+                        else:
+                            print(f"          ❌ WhatsApp send failed")
+
+                if is_new:
+                    db.commit()
 
             except Exception as e:
                 print(f"      ERROR on {t_raw.get('id')}: {e}")
@@ -494,11 +544,12 @@ async def test_full():
         db.close()
 
     print(f"\n{'='*60}")
-    print(f"SUMMARY (WhatsApp NOT sent — testing mode)")
-    print(f"  Scraped:  {stats['scraped']}")
-    print(f"  New:      {stats['new']}")
-    print(f"  Matched:  {stats['matched']}")
-    print(f"  Errors:   {stats['errors']}")
+    print(f"FULL PIPELINE SUMMARY")
+    print(f"  Scraped:      {stats['scraped']}")
+    print(f"  New in DB:    {stats['new']}")
+    print(f"  Matched:      {stats['matched']}")
+    print(f"  WA Sent:      {stats['alerts_sent']}")
+    print(f"  Errors:       {stats['errors']}")
     print(f"{'='*60}")
 
 

@@ -22,6 +22,10 @@ Route map:
   GET    /admin/config                  — show runtime config
   PATCH  /admin/config                  — update config (in-memory; survives until restart)
 
+  GET    /admin/run-logs                — scheduler run history (?job=daily_scrape&limit=20)
+  GET    /admin/run-logs/latest         — latest completed run per job type
+  GET    /admin/run-logs/health         — did daily_scrape run in the last 26 hours?
+
 To move this module to a separate repo in the future:
   1. Copy the admin/ folder
   2. Ensure database/, scraper/, ai/, whatsapp/ are available (as packages or installed)
@@ -29,7 +33,7 @@ To move this module to a separate repo in the future:
 """
 from fastapi import APIRouter
 
-from admin.routes import config, prices, scrape, stats, suppliers, tenders
+from admin.routes import config, prices, run_logs, scrape, stats, suppliers, tenders
 
 admin_router = APIRouter(prefix="/admin")
 
@@ -39,3 +43,4 @@ admin_router.include_router(tenders.router)
 admin_router.include_router(prices.router)
 admin_router.include_router(scrape.router)
 admin_router.include_router(config.router)
+admin_router.include_router(run_logs.router)

@@ -365,6 +365,15 @@ async def test_whatsapp():
         "templateParams": ["BidMint test message — API is working ✅"],
     }
 
+    payload_session = {
+        "apiKey": api_key,
+        "campaignName": "session_reply",
+        "destination": admin,
+        "userName": "BidMint",
+        "source": "test",
+        "templateParams": ["BidMint test message — API is working ✅"],
+    }
+
     # ── Test 2: tender_alert_v1 template (works if template is approved) ──
     payload_template = {
         "apiKey": api_key,

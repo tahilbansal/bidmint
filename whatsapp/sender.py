@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 import os
 from dotenv import load_dotenv
@@ -10,22 +11,51 @@ AISENSY_DIRECT_URL   = "https://backend.aisensy.com/campaign/t1/api/v2"   # Sess
 AISENSY_API_KEY = os.getenv("AISENSY_API_KEY")
 
 
+def _p(val: str | None, fallback: str = "—") -> str:
+    """Return stripped value or fallback — ensures no empty/whitespace templateParam."""
+    return (val or "").strip() or fallback
+
+
 async def send_tender_alert(whatsapp: str, tender: Tender) -> bool:
-    """Send HSM template alert for new tender."""
+    """
+    Send a tender recommendation via the tender_alert_v1 HSM template campaign.
+
+    Template params passed to AiSensy:
+      {{1}} location      {{2}} item (Hindi)    {{3}} department
+      {{4}} quantity      {{5}} deadline
+
+    Retries up to 2 times on failure.
+    """
+    deadline_str = tender.deadline.strftime("%d %b %Y") if tender.deadline else "जल्द बंद"
+    title = _p(tender.title_hindi or tender.title)
+    params = [
+        _p(tender.location, "Punjab"),
+        title,
+        _p(tender.department),
+        _p(tender.quantity),
+        deadline_str,
+    ]
     payload = {
         "apiKey": AISENSY_API_KEY,
-        "campaignName": os.getenv("AISENSY_CAMPAIGN_TENDER"),
+        "campaignName": os.getenv("AISENSY_CAMPAIGN_TENDER", "tender_alert_v1"),
         "destination": whatsapp,
         "userName": "BidMint",
-        "templateParams": [
-            tender.location or "Punjab",
-            tender.title_hindi or tender.title or "",
-            tender.department or "",
-            tender.quantity or "",
-            str(tender.deadline.strftime("%d %b %Y") if tender.deadline else ""),
-        ]
+        "templateParams": params,
     }
-    return await _post(AISENSY_CAMPAIGN_URL, payload)
+
+    for attempt in range(1, 4):  # up to 3 attempts (2 retries)
+        success = await _post(AISENSY_CAMPAIGN_URL, payload)
+        if success:
+            print(f"          📤 Alert sent → {whatsapp} (attempt {attempt})")
+            print(f"             Item    : {title[:60]}")
+            print(f"             Location: {_p(tender.location, 'Punjab')}")
+            print(f"             Qty     : {_p(tender.quantity)}  Deadline: {deadline_str}")
+            return True
+        if attempt < 3:
+            print(f"          ↩️  Retry {attempt}/2 for {whatsapp}...")
+            await asyncio.sleep(2)
+
+    return False
 
 
 async def send_tender_details(whatsapp: str, tender: Tender) -> bool:
@@ -119,13 +149,22 @@ async def _send_session_message(whatsapp: str, message: str) -> bool:
     """
     payload = {
         "apiKey": AISENSY_API_KEY,
-        "campaignName": "session_reply",
+        "campaignName": os.getenv("AISENSY_CAMPAIGN_SESSION", "session_reply"),
         "destination": whatsapp,
         "userName": "BidMint",
         "source": "bidmint-backend",
         "templateParams": [message],
     }
-    return await _post(AISENSY_CAMPAIGN_URL, payload)
+    ok = await _post(AISENSY_CAMPAIGN_URL, payload)
+    if not ok:
+        # session_reply campaign does not exist yet in AiSensy.
+        # Go to AiSensy → Campaigns → Create API Campaign → name "session_reply"
+        # Template body: {{1}}   (single variable, passes the full message text)
+        print(f"          ⚠️  session_reply campaign missing — message NOT sent to {whatsapp}")
+        print(f"          📄 Content that would have been delivered:")
+        for line in message.splitlines()[:12]:
+            print(f"             {line}")
+    return ok
 
 
 async def _post(url: str, payload: dict) -> bool:

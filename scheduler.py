@@ -1,10 +1,24 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from datetime import datetime
 import asyncio
+import logging
 import os
+import sys
 from dotenv import load_dotenv
 
+# Playwright requires ProactorEventLoop on Windows to spawn subprocesses.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("scheduler")
 
 scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
 
@@ -19,10 +33,17 @@ async def run_daily_scrape():
     from ai.scorer import calculate_match_score
     from whatsapp.sender import send_tender_alert, send_admin_report
     from database.connection import SessionLocal
-    from database.models import Tender, Supplier, Alert
+    from database.models import Tender, Supplier, Alert, RunLog
 
     db = SessionLocal()
     stats = {"scraped": 0, "new": 0, "alerts_sent": 0, "errors": 0}
+
+    # Create RunLog entry so we can track this run
+    run_log = RunLog(job_name="daily_scrape", started_at=datetime.utcnow())
+    db.add(run_log)
+    db.commit()
+    db.refresh(run_log)
+    log.info("run_daily_scrape started (run_id=%s)", run_log.id)
 
     try:
         # Scrape from multiple portals
@@ -30,15 +51,17 @@ async def run_daily_scrape():
         try:
             gem_tenders = await scrape_gem_tenders()
             raw_tenders.extend(gem_tenders)
+            log.info("GeM scraper: %d tenders fetched", len(gem_tenders))
         except Exception as e:
-            print(f"GeM scraper failed: {e}")
+            log.error("GeM scraper failed: %s", e)
             stats["errors"] += 1
 
         try:
             cppp_tenders = await scrape_cppp_tenders()
             raw_tenders.extend(cppp_tenders)
+            log.info("CPPP scraper: %d tenders fetched", len(cppp_tenders))
         except Exception as e:
-            print(f"CPPP scraper failed: {e}")
+            log.error("CPPP scraper failed: %s", e)
             stats["errors"] += 1
 
         food_tenders = filter_tenders(raw_tenders)
@@ -94,16 +117,33 @@ async def run_daily_scrape():
                             stats["alerts_sent"] += 1
 
             except Exception as e:
-                print(f"Error processing tender {t_raw.get('id')}: {e}")
+                log.error("Error processing tender %s: %s", t_raw.get("id"), e)
                 stats["errors"] += 1
                 continue
 
         db.commit()
 
     except Exception as e:
-        print(f"Fatal scrape error: {e}")
+        log.error("Fatal scrape error: %s", e, exc_info=True)
         stats["errors"] += 1
     finally:
+        # Persist run outcome
+        try:
+            run_log.finished_at = datetime.utcnow()
+            run_log.status = "success" if stats["errors"] == 0 else "error"
+            run_log.scraped = stats.get("scraped", 0)
+            run_log.new_tenders = stats.get("new", 0)
+            run_log.alerts_sent = stats.get("alerts_sent", 0)
+            run_log.errors = stats.get("errors", 0)
+            db.commit()
+        except Exception as rl_e:
+            log.error("RunLog update failed: %s", rl_e)
+
+        log.info(
+            "run_daily_scrape finished — scraped=%d new=%d alerts=%d errors=%d",
+            stats["scraped"], stats["new"], stats["alerts_sent"], stats["errors"],
+        )
+
         # Always send admin report
         admin_wa = os.getenv("ADMIN_WHATSAPP")
         if admin_wa:
@@ -121,6 +161,7 @@ async def send_morning_prices():
     from scraper.agmarknet import fetch_punjab_prices
     from whatsapp.sender import send_mandi_prices
 
+    log.info("send_morning_prices started")
     db = SessionLocal()
     try:
         prices = await fetch_punjab_prices()
@@ -132,6 +173,9 @@ async def send_morning_prices():
                 supplier.categories,
                 prices
             )
+        log.info("send_morning_prices finished — sent to %d suppliers", len(suppliers))
+    except Exception as e:
+        log.error("send_morning_prices error: %s", e, exc_info=True)
     finally:
         db.close()
 
@@ -142,13 +186,18 @@ async def send_daily_admin_report():
     from api.health import get_daily_stats
     from whatsapp.sender import send_admin_report
 
+    log.info("send_daily_admin_report started")
     admin_wa = os.getenv("ADMIN_WHATSAPP")
     if admin_wa:
         stats = get_daily_stats()
         await send_admin_report(admin_wa, stats)
+        log.info("send_daily_admin_report finished")
+    else:
+        log.warning("ADMIN_WHATSAPP not set — skipping admin report")
 
 
 if __name__ == "__main__":
     scheduler.start()
-    print("BidMint scheduler running (IST timezone)... Ctrl+C to stop")
+    log.info("BidMint scheduler started (IST timezone)")
     asyncio.get_event_loop().run_forever()
+

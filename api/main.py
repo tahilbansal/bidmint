@@ -4,6 +4,11 @@ from whatsapp.handler import handle_inbound
 from admin import admin_router
 import asyncio
 import os
+import sys
+
+# Playwright (and any subprocess-spawning async code) requires ProactorEventLoop on Windows.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 app = FastAPI(
     title="BidMint API",

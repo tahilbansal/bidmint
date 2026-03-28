@@ -1,7 +1,10 @@
- # Use the official Playwright Python image — includes Chromium + all system deps pre-installed
+# Use the official Playwright Python image — includes Chromium + all system deps pre-installed
 FROM mcr.microsoft.com/playwright/python:v1.50.0-jammy
 
 WORKDIR /app
+
+# Flush Python stdout/stderr immediately — critical for Render log visibility
+ENV PYTHONUNBUFFERED=1
 
 # Install Python dependencies
 COPY requirements.txt .

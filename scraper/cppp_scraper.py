@@ -59,14 +59,24 @@ def _parse_rows(soup: BeautifulSoup) -> list:
             deadline_str = cols[2].get_text(strip=True)   # Bid Submission Closing Date
             deadline = _parse_date(deadline_str)
 
+            # Direct link to the tender detail page
+            tender_url = ""
+            if anchor:
+                href = anchor.get("href", "")
+                if href.startswith("http"):
+                    tender_url = href
+                elif href.startswith("/"):
+                    tender_url = "https://eprocure.gov.in" + href
+
             if title:
                 tenders.append({
                     "id": f"cppp-{tender_id}",
                     "title": title,
                     "department": department,
-                    "location": "",   # not in listing; org name used for filtering
+                    "location": "",
                     "quantity": "",
                     "deadline": deadline,
+                    "tender_url": tender_url,
                     "source": "cppp",
                 })
         except Exception as e:

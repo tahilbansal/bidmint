@@ -82,6 +82,17 @@ def _parse_tender_table(soup: BeautifulSoup, org_name: str) -> list:
                 title = bracket_groups[0].strip()
                 tender_id = bracket_groups[2].strip()
                 deadline = _parse_date(cols[2].get_text(strip=True))
+
+                # Extract direct URL from the anchor in the title column
+                tender_url = ""
+                anchor = cols[4].find("a", href=True)
+                if anchor:
+                    href = anchor["href"]
+                    if href.startswith("http"):
+                        tender_url = href
+                    elif href.startswith("/"):
+                        tender_url = _BASE + href
+
                 tenders.append({
                     "id": f"hr-{tender_id}",
                     "title": title,
@@ -89,6 +100,7 @@ def _parse_tender_table(soup: BeautifulSoup, org_name: str) -> list:
                     "location": "Haryana",
                     "quantity": "",
                     "deadline": deadline,
+                    "tender_url": tender_url,
                     "source": "haryana",
                 })
             except Exception as e:

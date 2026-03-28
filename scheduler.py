@@ -84,6 +84,7 @@ async def run_daily_scrape():
                     quantity=t_raw["quantity"],
                     quantity_kg=ai_result.get("quantity_kg"),
                     deadline=t_raw.get("deadline"),
+                    tender_url=t_raw.get("tender_url", ""),
                     whatsapp_summary=ai_result["whatsapp_summary"],
                     ai_confidence=ai_result["confidence"],
                     red_flags=str(ai_result.get("red_flags", [])),

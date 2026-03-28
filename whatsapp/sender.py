@@ -60,16 +60,34 @@ async def send_tender_alert(whatsapp: str, tender: Tender) -> bool:
 
 async def send_tender_details(whatsapp: str, tender: Tender) -> bool:
     """Free-form session message with full tender details (after supplier replies YES)."""
-    gem_link = f"https://bidplus.gem.gov.in/bidlists"
+    # Use the scraped direct URL; fall back to a GeM search if missing
+    if tender.tender_url:
+        apply_link = tender.tender_url
+    elif tender.source == "gem":
+        import urllib.parse as _up
+        apply_link = (
+            "https://bidplus.gem.gov.in/search-bids?"
+            + _up.urlencode({"searchBidTitle": "", "bid_number": tender.id})
+        )
+    elif tender.source == "cppp":
+        apply_link = "https://eprocure.gov.in/cppp/latestactivetendersnew/cppp10"
+    elif tender.source == "punjab_state":
+        apply_link = "https://eproc.punjab.gov.in/nicgep/app"
+    elif tender.source == "haryana":
+        apply_link = "https://etenders.hry.nic.in/nicgep/app"
+    else:
+        apply_link = "https://eprocure.gov.in/cppp/latestactivetendersnew/cppp10"
+
+    deadline_str = tender.deadline.strftime('%d %b %Y %I:%M %p') if tender.deadline else 'N/A'
     message = (
         f"✅ *टेंडर की पूरी जानकारी*\n\n"
         f"📋 *आइटम:* {tender.title_hindi or tender.title}\n"
         f"🏢 *विभाग:* {tender.department}\n"
-        f"📍 *जगह:* {tender.location}\n"
-        f"📦 *मात्रा:* {tender.quantity}\n"
-        f"⏰ *डेडलाइन:* {tender.deadline.strftime('%d %b %Y %I:%M %p') if tender.deadline else 'N/A'}\n"
-        f"🔢 *GeM Bid No:* {tender.id}\n\n"
-        f"GeM पर बोली लगाने के लिए:\n{gem_link}\n\n"
+        f"📍 *जगह:* {tender.location or 'उपलब्ध नहीं'}\n"
+        f"📦 *मात्रा:* {tender.quantity or 'N/A'}\n"
+        f"⏰ *डेडलाइन:* {deadline_str}\n"
+        f"🔢 *Tender ID:* {tender.id}\n\n"
+        f"🔗 *आवेदन करने के लिए लिंक:*\n{apply_link}\n\n"
         f"कोई सवाल? *HELP* भेजें 🙏"
     )
     return await _send_session_message(whatsapp, message)

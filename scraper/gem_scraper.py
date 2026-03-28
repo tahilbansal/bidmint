@@ -238,6 +238,21 @@ def _parse_tenders_from_html(content: str) -> list:
                 if len(rows) >= 2:
                     quantity = rows[1].get_text(strip=True).replace("Quantity:", "").strip()
 
+             # ── Tender URL ───────────────────────────────────────
+            # The anchor href is typically /bids/bidsview?BID=... (relative)
+            href = bid_link.get("href", "")
+            if href.startswith("/"):
+                tender_url = "https://bidplus.gem.gov.in" + href
+            elif href.startswith("http"):
+                tender_url = href
+            else:
+                # Construct a reliable search URL as fallback
+                import urllib.parse as _up
+                tender_url = (
+                    "https://bidplus.gem.gov.in/search-bids?"
+                    + _up.urlencode({"searchBidTitle": "", "bid_number": bid_id})
+                )
+
             # ── Department + Location ────────────────────────────
             # col-md-5 has two rows: label row + value row
             # Value row: "Ministry of Communications\nDepartment of Posts"
@@ -267,6 +282,7 @@ def _parse_tenders_from_html(content: str) -> list:
                 "location": location,
                 "quantity": quantity,
                 "deadline": deadline,
+                "tender_url": tender_url,
                 "source": "gem",
             })
 

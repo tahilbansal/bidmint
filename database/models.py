@@ -37,6 +37,7 @@ class Tender(Base):
     quantity         = Column(String(100))
     quantity_kg      = Column(Float, nullable=True)
     deadline         = Column(DateTime, nullable=True)
+    tender_url       = Column(String(500), nullable=True)   # direct link to tender detail page
     whatsapp_summary = Column(Text)
     ai_confidence    = Column(String(10))                    # HIGH|MEDIUM|LOW
     red_flags        = Column(Text, default="[]")            # JSON array

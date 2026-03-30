@@ -3,7 +3,7 @@
     name: bidmint-api
     runtime: docker
     dockerfilePath: ./Dockerfile
-    dockerCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    dockerCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT --log-level info
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
@@ -23,7 +23,11 @@
       - key: ADMIN_API_KEY
         sync: false
       - key: MIN_MATCH_SCORE
-        value: "70"
+        value: "35"
+      - key: ACTIVE_PORTALS
+        value: gem,cppp,punjab,haryana
+      - key: PYTHONUNBUFFERED
+        value: "1"
       - key: ENVIRONMENT
         value: production
 
@@ -50,6 +54,10 @@
       - key: ADMIN_API_KEY
         sync: false
       - key: MIN_MATCH_SCORE
-        value: "70"
+        value: "35"
+      - key: ACTIVE_PORTALS
+        value: gem,cppp,punjab,haryana
+      - key: PYTHONUNBUFFERED
+        value: "1"
       - key: ENVIRONMENT
         value: production

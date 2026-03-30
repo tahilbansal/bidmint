@@ -3,8 +3,17 @@ from fastapi.responses import JSONResponse
 from whatsapp.handler import handle_inbound
 from admin import admin_router
 import asyncio
+import logging
 import os
 import sys
+
+# Structured logging — stream to stdout so Render captures it.
+logging.basicConfig(
+    stream=sys.stdout,
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 # Playwright (and any subprocess-spawning async code) requires ProactorEventLoop on Windows.
 if sys.platform == "win32":

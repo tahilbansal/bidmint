@@ -9,11 +9,11 @@ import os
 from typing import Any
 
 _config: dict[str, Any] = {
-    # Which portals to scrape — comma-separated subset of: gem, cppp, punjab
-    "portals": [p.strip() for p in os.getenv("ACTIVE_PORTALS", "gem,cppp,punjab").split(",")],
+    # Which portals to scrape — comma-separated subset of: gem, cppp, punjab, haryana
+    "portals": [p.strip() for p in os.getenv("ACTIVE_PORTALS", "gem,cppp,punjab,haryana").split(",")],
 
     # States whose tenders are accepted (used by filter)
-    "states": [s.strip() for s in os.getenv("ACTIVE_STATES", "punjab,haryana,himachal,j&k,jammu").split(",")],
+    "states": [s.strip() for s in os.getenv("ACTIVE_STATES", "punjab,haryana,delhi,himachal,j&k,jammu").split(",")],
 
     # Minimum AI match score (0-100) to send a WhatsApp alert
     "min_match_score": int(os.getenv("MIN_MATCH_SCORE", "70")),

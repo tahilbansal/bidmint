@@ -17,6 +17,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
+    stream=sys.stdout,  # Render captures stdout; stderr may be dropped
 )
 log = logging.getLogger("scheduler")
 
@@ -26,8 +27,8 @@ scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
 @scheduler.scheduled_job(CronTrigger(hour=6, minute=30))
 async def run_daily_scrape():
     """Main job — 6:30 AM IST daily."""
-    from scraper.gem_scraper import scrape_gem_tenders
-    from scraper.cppp_scraper import scrape_cppp_tenders
+    from scraper.runner import scrape_portals
+    from scraper.registry import enabled_keys
     from scraper.filter import filter_tenders
     from ai.matcher import parse_tender_with_ai
     from ai.scorer import calculate_match_score
@@ -46,23 +47,14 @@ async def run_daily_scrape():
     log.info("run_daily_scrape started (run_id=%s)", run_log.id)
 
     try:
-        # Scrape from multiple portals
-        raw_tenders = []
-        try:
-            gem_tenders = await scrape_gem_tenders()
-            raw_tenders.extend(gem_tenders)
-            log.info("GeM scraper: %d tenders fetched", len(gem_tenders))
-        except Exception as e:
-            log.error("GeM scraper failed: %s", e)
-            stats["errors"] += 1
-
-        try:
-            cppp_tenders = await scrape_cppp_tenders()
-            raw_tenders.extend(cppp_tenders)
-            log.info("CPPP scraper: %d tenders fetched", len(cppp_tenders))
-        except Exception as e:
-            log.error("CPPP scraper failed: %s", e)
-            stats["errors"] += 1
+        # Scrape all enabled portals via shared runner (handles playwright routing)
+        portals = enabled_keys()
+        log.info("Scraping portals: %s", portals)
+        raw_tenders, portal_stats = await scrape_portals(portals)
+        stats["errors"] += sum(1 for v in portal_stats.values() if isinstance(v, str))
+        for portal, result in portal_stats.items():
+            log.info("Portal %s: %s", portal, result)
+        log.info("Total raw tenders: %d", len(raw_tenders))
 
         food_tenders = filter_tenders(raw_tenders)
         stats["scraped"] = len(food_tenders)
@@ -75,8 +67,8 @@ async def run_daily_scrape():
             try:
                 ai_result = await parse_tender_with_ai(t_raw)
 
-                # Skip if AI says it's not really food
-                if ai_result["food_category"] == "other" \
+                # Skip if AI (or fallback) can't classify as food
+                if ai_result["food_category"] in ("other", "other_food") \
                         and ai_result["confidence"] == "LOW":
                     continue
 
@@ -92,12 +84,12 @@ async def run_daily_scrape():
                     quantity=t_raw["quantity"],
                     quantity_kg=ai_result.get("quantity_kg"),
                     deadline=t_raw.get("deadline"),
+                    tender_url=t_raw.get("tender_url", ""),
                     whatsapp_summary=ai_result["whatsapp_summary"],
                     ai_confidence=ai_result["confidence"],
                     red_flags=str(ai_result.get("red_flags", [])),
                 )
                 db.add(tender)
-                stats["new"] += 1
 
                 # Match to active suppliers
                 suppliers = db.query(Supplier)\
@@ -116,12 +108,19 @@ async def run_daily_scrape():
                             tender.alerted_count += 1
                             stats["alerts_sent"] += 1
 
+                # Commit each tender independently — a failure on one
+                # must not roll back tenders already successfully saved.
+                db.commit()
+                stats["new"] += 1
+
             except Exception as e:
                 log.error("Error processing tender %s: %s", t_raw.get("id"), e)
                 stats["errors"] += 1
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
                 continue
-
-        db.commit()
 
     except Exception as e:
         log.error("Fatal scrape error: %s", e, exc_info=True)

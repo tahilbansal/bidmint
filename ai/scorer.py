@@ -1,13 +1,21 @@
 from database.models import Supplier, Tender
 
 ADJACENT_DISTRICTS = {
+    # Punjab districts
     "patiala":    ["ludhiana", "fatehgarh sahib", "ropar", "ambala", "kurukshetra"],
     "ludhiana":   ["patiala", "jalandhar", "moga", "fatehgarh sahib", "barnala"],
     "amritsar":   ["gurdaspur", "tarn taran", "jalandhar", "pathankot"],
     "jalandhar":  ["ludhiana", "amritsar", "kapurthala", "hoshiarpur", "nawanshahr"],
     "bathinda":   ["mansa", "faridkot", "moga", "barnala", "muktsar"],
-    "chandigarh": ["mohali", "patiala", "ropar", "ambala"],
+    "chandigarh": ["mohali", "patiala", "ropar", "ambala", "panchkula"],
     "mohali":     ["chandigarh", "patiala", "ropar", "fatehgarh sahib"],
+    # Haryana districts
+    "ambala":     ["kurukshetra", "panchkula", "yamunanagar", "patiala"],
+    "kurukshetra":["ambala", "kaithal", "karnal", "patiala"],
+    "karnal":     ["kurukshetra", "panipat", "kaithal", "sonipat"],
+    "panipat":    ["karnal", "sonipat", "jind"],
+    "gurugram":   ["faridabad", "rewari", "jhajjar", "delhi"],
+    "faridabad":  ["gurugram", "palwal", "delhi"],
 }
 
 
@@ -44,12 +52,23 @@ def calculate_match_score(
     supplier_dist = (supplier.district or "").lower()
     adjacent = ADJACENT_DISTRICTS.get(supplier_dist, [])
 
-    if supplier_dist in tender_loc:
+    if not tender_loc:
+        # CPPP and some portals omit location — use department as proxy
+        dept_lower = (tender.department or "").lower()
+        FOOD_DEPT_SIGNALS = ["food", "supply", "ration", "fci", "nafed",
+                             "civil supplies", "hafed", "confed", "agri"]
+        if any(sig in dept_lower for sig in FOOD_DEPT_SIGNALS):
+            score += 8                       # Likely relevant food dept
+        else:
+            score += 5                       # Unknown location — neutral
+    elif supplier_dist and supplier_dist in tender_loc:
         score += 30                          # Same district
     elif any(adj in tender_loc for adj in adjacent):
         score += 20                          # Adjacent district
     elif "punjab" in tender_loc:
         score += 10                          # Same state at least
+    elif "haryana" in tender_loc or "delhi" in tender_loc or "ncr" in tender_loc:
+        score += 8                           # Nearby state
 
     # ── 3. AI confidence (20 pts) ───────────────────────────────
     conf_map = {"HIGH": 20, "MEDIUM": 12, "LOW": 5}

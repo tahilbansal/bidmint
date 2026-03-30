@@ -9,8 +9,6 @@ import asyncio
 import json
 import logging
 import os
-import sys
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional
 
@@ -24,20 +22,6 @@ log = logging.getLogger("admin.scrape")
 # In-memory cache for live progress during the current session.
 # Keys are job_id (=str(run_log.id)), value is the latest job dict.
 _live_jobs: dict[str, dict] = {}
-
-# Dedicated thread pool for Playwright scrapers — see _run_scraper_in_thread.
-_scraper_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="scraper")
-
-
-def _run_scraper_in_thread(scraper_fn):
-    """
-    Run an async scraper in a dedicated thread with its own event loop.
-    Playwright requires ProactorEventLoop on Windows to spawn browser subprocesses;
-    uvicorn uses SelectorEventLoop which does not support subprocess_exec.
-    """
-    if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    return asyncio.run(scraper_fn())
 
 
 def _job_from_run_log(rl) -> dict:
@@ -100,39 +84,21 @@ async def _run_scrape_job(job_id: str, portals: list[str]) -> None:
     error_msgs: list[str] = []
 
     try:
-        from scraper.gem_scraper import scrape_gem_tenders
-        from scraper.cppp_scraper import scrape_cppp_tenders
-        from scraper.punjab_scraper import scrape_punjab_tenders
+        from scraper.runner import scrape_portals
         from scraper.filter import filter_tenders
         from ai.matcher import parse_tender_with_ai
         from ai.scorer import calculate_match_score
         from whatsapp.sender import send_tender_alert
 
-        loop = asyncio.get_event_loop()
-        raw_tenders: list = []
-
-        scraper_map = {
-            "gem": scrape_gem_tenders,
-            "cppp": scrape_cppp_tenders,
-            "punjab": scrape_punjab_tenders,
-        }
-        for portal, scraper_fn in scraper_map.items():
-            if portal not in portals:
-                continue
-            try:
-                log.info("[job %s] starting %s scraper", job_id, portal)
-                tenders = await loop.run_in_executor(
-                    _scraper_pool, _run_scraper_in_thread, scraper_fn
-                )
-                raw_tenders.extend(tenders)
-                debug["portal_results"][portal] = len(tenders)
-                log.info("[job %s] %s: %d raw tenders", job_id, portal, len(tenders))
-            except Exception as e:
-                msg = f"{portal} scraper error: {e}"
-                debug["portal_results"][portal] = msg
-                error_msgs.append(msg)
+        raw_tenders, portal_stats = await scrape_portals(portals)
+        for portal, result in portal_stats.items():
+            debug["portal_results"][portal] = result
+            if isinstance(result, str):
                 errors += 1
-                log.error("[job %s] %s", job_id, msg, exc_info=True)
+                error_msgs.append(result)
+                log.error("[job %s] %s", job_id, result)
+            else:
+                log.info("[job %s] %s: %d raw tenders", job_id, portal, result)
 
         raw_scraped = len(raw_tenders)
         debug["raw_scraped"] = raw_scraped
@@ -159,9 +125,13 @@ async def _run_scrape_job(job_id: str, portals: list[str]) -> None:
                     "[job %s] AI: %s → category=%s confidence=%s",
                     job_id, t_raw.get("id"), ai_result["food_category"], ai_result["confidence"],
                 )
-                if ai_result["food_category"] == "other" and ai_result["confidence"] == "LOW":
+                # Reject only when the fallback (or Claude) can't find any food category.
+                # "other_food" is the rule-based fallback value for unrecognised items.
+                if ai_result["food_category"] in ("other", "other_food") \
+                        and ai_result["confidence"] == "LOW":
                     ai_rejected += 1
-                    log.info("[job %s] AI rejected %s", job_id, t_raw.get("id"))
+                    log.info("[job %s] AI rejected %s (category=%s)",
+                             job_id, t_raw.get("id"), ai_result["food_category"])
                     continue
 
                 tender = Tender(
@@ -175,14 +145,13 @@ async def _run_scrape_job(job_id: str, portals: list[str]) -> None:
                     quantity=t_raw["quantity"],
                     quantity_kg=ai_result.get("quantity_kg"),
                     deadline=t_raw.get("deadline"),
+                    tender_url=t_raw.get("tender_url", ""),
                     whatsapp_summary=ai_result["whatsapp_summary"],
                     ai_confidence=ai_result["confidence"],
                     red_flags=str(ai_result.get("red_flags", [])),
                 )
                 db.add(tender)
                 db.flush()  # assign PK before adding alerts
-                new_saved += 1
-                log.info("[job %s] saved tender %s", job_id, tender.id)
 
                 suppliers = db.query(Supplier).filter(Supplier.active == True).all()  # noqa: E712
                 for supplier in suppliers:
@@ -198,13 +167,22 @@ async def _run_scrape_job(job_id: str, portals: list[str]) -> None:
                             tender.alerted_count += 1
                             alerts_sent += 1
 
+                # Commit each tender individually so a failure on one never
+                # rolls back tenders that were already successfully processed.
+                db.commit()
+                new_saved += 1
+                log.info("[job %s] saved tender %s", job_id, tender.id)
+
             except Exception as e:
                 msg = f"tender {t_raw.get('id')}: {e}"
                 error_msgs.append(msg)
                 errors += 1
                 log.error("[job %s] %s", job_id, msg, exc_info=True)
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
 
-        db.commit()
         log.info(
             "[job %s] done — raw=%d food=%d skip=%d ai_rej=%d new=%d alerts=%d err=%d",
             job_id, raw_scraped, food_filtered, already_in_db,
@@ -276,10 +254,11 @@ async def trigger_scrape(
     - **portals**: comma-separated list, e.g. `gem,cppp`. Omit to use all active portals.
     """
     from admin.config_store import get_config
+    from scraper.registry import enabled_keys
     from database.connection import SessionLocal
     from database.models import RunLog
 
-    active_portals = [p.strip() for p in portals.split(",")] if portals else get_config()["portals"]
+    active_portals = [p.strip() for p in portals.split(",")] if portals else enabled_keys()
 
     db = SessionLocal()
     try:

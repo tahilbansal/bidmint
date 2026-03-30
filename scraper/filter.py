@@ -73,8 +73,13 @@ BLOCKLIST = [
     # IT equipment
     "computer", "laptop", "software", "server",
     "printer", "scanner", "cctv", "networking",
-    # Vehicles & spare parts
+    # Vehicles, transport & two/four-wheelers
     "vehicle", "ambulance", "tyre", "spare part",
+    "two wheeler", "two-wheeler", "4 wheeler", "four wheeler", "four-wheeler",
+    "wheeler", "motorcycle", "scooter", "bicycle",
+    # Civil improvement / upgrade works — not food supply
+    "improvement work", "improvement of", "augmentation",
+    "upgradation", "bituminous", "asphalting",
     # Uniforms & textiles
     "uniform", "linen", "garment",
     # Medical & pharma
@@ -90,14 +95,29 @@ BLOCKLIST = [
     "hydraulic oil", "diesel", "petrol",
 ]
 
-PUNJAB_KEYWORDS = [
+# North India geography — Punjab, Haryana, Delhi/NCR, and adjacent hill states
+NORTH_INDIA_KEYWORDS = [
+    # Punjab districts
     "punjab", "patiala", "ludhiana", "amritsar", "jalandhar",
     "chandigarh", "mohali", "bathinda", "pathankot", "hoshiarpur",
     "gurdaspur", "firozpur", "faridkot", "moga", "ropar", "barnala",
-    "mansa", "fatehgarh", "tarn taran", "nawanshahr",
-    # Adjacent states — suppliers can fulfil these too
-    "haryana", "himachal", "hp", "j&k", "jammu",
+    "mansa", "fatehgarh", "tarn taran", "nawanshahr", "kapurthala",
+    "muktsar", "sangrur",
+    # Haryana districts
+    "haryana",
+    "ambala", "kurukshetra", "karnal", "panipat", "sonipat",
+    "rohtak", "jhajjar", "hisar", "sirsa", "fatehabad",
+    "rewari", "mahendragarh", "yamunanagar", "panchkula",
+    "kaithal", "jind", "bhiwani", "palwal", "nuh",
+    # Delhi / NCR
+    "delhi", "new delhi", "ncr",
+    "gurugram", "gurgaon", "faridabad", "noida", "ghaziabad",
+    # Hill states — suppliers can fulfil these too
+    "himachal", "hp", "j&k", "jammu", "kashmir",
 ]
+
+# Backward-compat alias used externally
+PUNJAB_KEYWORDS = NORTH_INDIA_KEYWORDS
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -137,11 +157,29 @@ def is_food_tender(tender: dict) -> bool:
     return any(dep in department for dep in FOOD_DEPTS)
 
 
-def is_punjab_tender(tender: dict) -> bool:
-    """Check if tender location or department is in Punjab / adjacent states."""
+def is_north_india_tender(tender: dict) -> bool:
+    """
+    Return True when the tender is relevant to North India suppliers.
+
+    Source-specific scrapers (punjab_state, haryana) already guarantee
+    geographic relevance, so geography checks are skipped for them.
+    CPPP tenders often have no location at all — accept them so the
+    AI scorer can evaluate them on other signals.
+    """
+    source = tender.get("source", "")
+    # Scrapers that already constrain to a single state
+    if source in ("punjab_state", "haryana"):
+        return True
+    # CPPP tenders often have blank location — include them for AI scoring
+    if source == "cppp" and not tender.get("location"):
+        return True
     location = tender.get("location", "").lower()
     department = tender.get("department", "").lower()
-    return any(kw in location or kw in department for kw in PUNJAB_KEYWORDS)
+    return any(kw in location or kw in department for kw in NORTH_INDIA_KEYWORDS)
+
+
+# Backward-compat alias
+is_punjab_tender = is_north_india_tender
 
 
 def detect_category(tender: dict) -> str:
@@ -172,15 +210,15 @@ def detect_category(tender: dict) -> str:
 
 
 def filter_tenders(tenders: list) -> list:
-    """Filter raw scraped tenders to only Punjab food tenders, with category tagged."""
+    """Filter raw scraped tenders to only North India food tenders, with category tagged."""
     rejected_food = sum(1 for t in tenders if not is_food_tender(t))
     filtered = [
         {**t, "category": detect_category(t)}
         for t in tenders
-        if is_food_tender(t) and is_punjab_tender(t)
+        if is_food_tender(t) and is_north_india_tender(t)
     ]
     log.info(
-        "Filter: %d total → %d Punjab food tenders (%d rejected as non-food)",
+        "Filter: %d total → %d North India food tenders (%d rejected as non-food)",
         len(tenders), len(filtered), rejected_food,
     )
     return filtered

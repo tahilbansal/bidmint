@@ -1,41 +1,62 @@
 """
 GeM Portal Scraper — bidplus.gem.gov.in
-Scrapes government e-marketplace tenders using Playwright for JS-rendered pages.
+
+Strategy:
+  Instead of scraping the generic all-bids page (which returns random bid types),
+  we perform targeted keyword searches for food-related terms.  Each search URL
+  returns bids matching that keyword across all categories.  Results are collected
+  and deduplicated by bid ID before returning.
+
+  _FOOD_SEARCH_TERMS  × _PAGES_PER_TERM pages × ~10 results/page
+  ≈ 13 terms × 3 pages × 10 = ~390 targeted results per run.
 """
 import asyncio
 import argparse
+import logging
 import os
+import urllib.parse
 from datetime import datetime
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+log = logging.getLogger(__name__)
 
-GEM_BASE_URL = "https://bidplus.gem.gov.in/all-bids"
-
-# Container selector — confirmed from live page HTML
-_CONTENT_SELECTOR = "#bidCard"
-
-# Fallback containers if GeM ever changes the id
-_CONTENT_SELECTORS_FALLBACK = [
-    "#pagi_content",
-    ".bids",
-    ".bid-list",
+# Food keyword searches — one browser navigation per term, deduped by bid id
+_FOOD_SEARCH_TERMS = [
+    "rice", "chawal", "wheat", "atta",
+    "dal", "pulses", "lentil",
+    "sugar", "edible oil", "ghee",
+    "milk dairy", "grocery ration", "foodgrain",
 ]
+
+# Pages to paginate per search term (3 × ~10 bids = up to 30 targeted results each)
+_PAGES_PER_TERM = 3
+
+# URL template — search param appended to the all-bids endpoint
+_GEM_SEARCH_URL = (
+    "https://bidplus.gem.gov.in/all-bids"
+    "?bid_number=&items_per_page=&search_under=&search={term}"
+)
+
+# Content container selectors (in priority order)
+_CONTENT_SELECTOR = "#bidCard"
+_CONTENT_SELECTORS_FALLBACK = ["#pagi_content", ".bids", ".bid-list"]
 
 
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=30, min=30, max=120),
-    reraise=True
+    reraise=True,
 )
 async def scrape_gem_tenders() -> list:
     """
-    Scrape GeM portal for latest tender listings.
-    Returns list of raw tender dicts with keys:
-    id, title, department, location, quantity, deadline, source
+    Scrape GeM portal using food keyword searches.
+    Returns deduplicated list of raw tender dicts:
+      id, title, department, location, quantity, deadline, source
     """
-    tenders = []
+    all_tenders: list = []
+    seen_ids: set = set()
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -44,7 +65,7 @@ async def scrape_gem_tenders() -> list:
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
-            ]
+            ],
         )
         context = await browser.new_context(
             user_agent=(
@@ -55,96 +76,108 @@ async def scrape_gem_tenders() -> list:
             viewport={"width": 1366, "height": 768},
             locale="en-IN",
             timezone_id="Asia/Kolkata",
-            # Mask automation signals
             extra_http_headers={
                 "Accept-Language": "en-IN,en;q=0.9,hi;q=0.8",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            }
+            },
         )
-
-        # Override navigator.webdriver to avoid bot detection
         await context.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
-
         page = await context.new_page()
 
         try:
-            # Use domcontentloaded — networkidle can hang on CDN resources
-            await page.goto(GEM_BASE_URL, timeout=90000, wait_until="domcontentloaded")
+            for term in _FOOD_SEARCH_TERMS:
+                url = _GEM_SEARCH_URL.format(term=urllib.parse.quote(term))
+                term_tenders = await _scrape_search_term(page, url, term)
 
-            # Small human-like pause
-            await asyncio.sleep(3)
+                new_count = 0
+                for t in term_tenders:
+                    if t["id"] not in seen_ids:
+                        seen_ids.add(t["id"])
+                        all_tenders.append(t)
+                        new_count += 1
 
-            # Wait for the confirmed content container
-            loaded = False
-            try:
-                await page.wait_for_selector(_CONTENT_SELECTOR, timeout=20000)
-                loaded = True
-                print(f"GeM: content loaded (selector: '{_CONTENT_SELECTOR}')")
-            except Exception:
-                pass
-
-            if not loaded:
-                # Try fallbacks
-                for sel in _CONTENT_SELECTORS_FALLBACK:
-                    try:
-                        await page.wait_for_selector(sel, timeout=10000)
-                        loaded = True
-                        print(f"GeM: content loaded via fallback selector '{sel}'")
-                        break
-                    except Exception:
-                        continue
-
-            if not loaded:
-                _save_debug_snapshot(
-                    await page.content(),
-                    await page.screenshot(full_page=True)
+                log.info(
+                    "GeM '%s': %d found, %d new after dedup",
+                    term, len(term_tenders), new_count,
                 )
-                raise RuntimeError(
-                    "GeM page loaded but no bid content found. "
-                    "Debug snapshot saved to scraper/gem_debug.html and gem_debug.png"
-                )
-
-            content = await page.content()
-            page_tenders = _parse_tenders_from_html(content)
-            tenders.extend(page_tenders)
-            print(f"  Page 1: {len(page_tenders)} tenders")
-
-            # Paginate — pages are loaded via AJAX on .page-link click
-            for page_num in range(2, 11):
-                try:
-                    # href="#page-N" pattern confirmed in live HTML
-                    next_link = await page.query_selector(f'a[href="#page-{page_num}"].page-link')
-                    if not next_link:
-                        break
-
-                    await next_link.click()
-                    # Wait for AJAX to repopulate #bidCard
-                    await asyncio.sleep(3)
-                    try:
-                        await page.wait_for_load_state("domcontentloaded", timeout=10000)
-                    except Exception:
-                        pass
-
-                    content = await page.content()
-                    page_tenders = _parse_tenders_from_html(content)
-                    if not page_tenders:
-                        break
-                    tenders.extend(page_tenders)
-                    print(f"  Page {page_num}: {len(page_tenders)} tenders")
-
-                except Exception:
-                    break
+                # Brief pause between searches to avoid rate limiting
+                await asyncio.sleep(2)
 
         except Exception as e:
-            print(f"GeM scraper error: {e}")
+            log.error("GeM scraper error: %s", e)
             raise
         finally:
             await browser.close()
 
-    print(f"GeM scraper: found {len(tenders)} tenders")
+    log.info(
+        "GeM scraper: %d unique tenders from %d search terms",
+        len(all_tenders), len(_FOOD_SEARCH_TERMS),
+    )
+    return all_tenders
+
+
+async def _scrape_search_term(page, url: str, term: str) -> list:
+    """Navigate to a search URL and scrape up to _PAGES_PER_TERM pages."""
+    tenders = []
+    try:
+        await page.goto(url, timeout=90000, wait_until="domcontentloaded")
+        await asyncio.sleep(2)
+
+        # Wait for content container
+        loaded = False
+        try:
+            await page.wait_for_selector(_CONTENT_SELECTOR, timeout=15000)
+            loaded = True
+        except Exception:
+            pass
+
+        if not loaded:
+            for sel in _CONTENT_SELECTORS_FALLBACK:
+                try:
+                    await page.wait_for_selector(sel, timeout=8000)
+                    loaded = True
+                    break
+                except Exception:
+                    continue
+
+        if not loaded:
+            log.warning("GeM: no content container for '%s' — skipping", term)
+            _save_debug_snapshot(
+                await page.content(),
+                await page.screenshot(full_page=True),
+            )
+            return tenders
+
+        # Page 1
+        page_tenders = _parse_tenders_from_html(await page.content())
+        tenders.extend(page_tenders)
+
+        # Pages 2..N
+        for page_num in range(2, _PAGES_PER_TERM + 1):
+            try:
+                next_link = await page.query_selector(f'a[href="#page-{page_num}"].page-link')
+                if not next_link:
+                    break
+                await next_link.click()
+                await asyncio.sleep(2)
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=8000)
+                except Exception:
+                    pass
+                page_tenders = _parse_tenders_from_html(await page.content())
+                if not page_tenders:
+                    break
+                tenders.extend(page_tenders)
+            except Exception:
+                break
+
+    except Exception as e:
+        log.warning("GeM search '%s' failed: %s", term, e)
+
     return tenders
+
 
 
 def _parse_tenders_from_html(content: str) -> list:
@@ -205,6 +238,21 @@ def _parse_tenders_from_html(content: str) -> list:
                 if len(rows) >= 2:
                     quantity = rows[1].get_text(strip=True).replace("Quantity:", "").strip()
 
+             # ── Tender URL ───────────────────────────────────────
+            # The anchor href is typically /bids/bidsview?BID=... (relative)
+            href = bid_link.get("href", "")
+            if href.startswith("/"):
+                tender_url = "https://bidplus.gem.gov.in" + href
+            elif href.startswith("http"):
+                tender_url = href
+            else:
+                # Construct a reliable search URL as fallback
+                import urllib.parse as _up
+                tender_url = (
+                    "https://bidplus.gem.gov.in/search-bids?"
+                    + _up.urlencode({"searchBidTitle": "", "bid_number": bid_id})
+                )
+
             # ── Department + Location ────────────────────────────
             # col-md-5 has two rows: label row + value row
             # Value row: "Ministry of Communications\nDepartment of Posts"
@@ -234,6 +282,7 @@ def _parse_tenders_from_html(content: str) -> list:
                 "location": location,
                 "quantity": quantity,
                 "deadline": deadline,
+                "tender_url": tender_url,
                 "source": "gem",
             })
 

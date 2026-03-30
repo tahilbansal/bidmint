@@ -5,7 +5,7 @@ Always respond in valid JSON only. No prose. No markdown fences.
 
 Analyse this GeM tender and return JSON with exactly these keys:
 {{
-  "food_category": "rice|wheat|pulses|oil|sugar|dairy|spices|other",
+  "food_category": "rice|wheat|pulses|oils|sugar|dairy|spices|vegetables|fruits|grocery|other",
   "item_name_hindi": "item name in Hindi/Devanagari script",
   "quantity_kg": <number in kg or null if unclear>,
   "fssai_required": true or false,
